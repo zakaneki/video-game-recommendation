@@ -1,11 +1,16 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 import pymongo
 from typing import List, Dict, Any, Set
+from datetime import datetime
 
 # --- MongoDB Connection Details (should match your main.py) ---
 MONGO_CONNECTION_STRING = "mongodb://localhost:27017/"
 MONGO_DB_NAME = "igdb_data"
 MONGO_GAMES_COLLECTION_NAME = "games"  # Collection where game data is stored
+MONGO_COVERS_COLLECTION_NAME = "covers"
+MONGO_GENRES_COLLECTION_NAME = "genres"
+MONGO_THEMES_COLLECTION_NAME = "themes"
 # --- ---
 
 app = FastAPI(
@@ -14,19 +19,40 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# --- CORS Middleware ---
+origins = [
+    "http://localhost:5173",  # Your Vite React frontend development server
+    # Add other origins if needed, e.g., your deployed frontend URL
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods
+    allow_headers=["*"], # Allows all headers
+)
+
+
 # --- MongoDB Client ---
 # It's generally recommended to manage client lifecycle with startup/shutdown events for production
 # For simplicity here, we'll create it on demand or keep it global.
 # For a more robust solution, consider FastAPI's dependency injection for DB connections.
 mongo_client = None
 games_collection = None
+covers_collection = None
+genres_collection = None
+themes_collection = None
 
 @app.on_event("startup")
 async def startup_db_client():
-    global mongo_client, games_collection
+    global mongo_client, db, games_collection, covers_collection, genres_collection, themes_collection
     mongo_client = pymongo.MongoClient(MONGO_CONNECTION_STRING)
     db = mongo_client[MONGO_DB_NAME]
     games_collection = db[MONGO_GAMES_COLLECTION_NAME]
+    covers_collection = db[MONGO_COVERS_COLLECTION_NAME]
+    genres_collection = db[MONGO_GENRES_COLLECTION_NAME]
+    themes_collection = db[MONGO_THEMES_COLLECTION_NAME]
     # Ensure index for faster lookups on name (if not already created by main.py on 'id')
     # main.py creates an index on 'id'. For name lookups, a text index or regex on a regular index is used.
     # games_collection.create_index([("name", pymongo.TEXT)], background=True) # Optional: for text search
@@ -40,45 +66,31 @@ async def shutdown_db_client():
         print("MongoDB connection closed.")
 
 def calculate_jaccard_similarity(set1: Set[Any], set2: Set[Any]) -> float:
-    if not set1 and not set2:
-        return 1.0  # Both empty, consider them perfectly similar
-    if not set1 or not set2:
-        return 0.0  # One is empty, the other is not
-    
     intersection_len = len(set1.intersection(set2))
     union_len = len(set1.union(set2))
     
-    return intersection_len / union_len if union_len != 0 else 0.0
-
-def _extract_values_from_list_of_objects(data_list: List[Dict[str, Any]], key_name: str = 'id') -> Set[Any]: # Changed default key_name to 'id' and return type to Set[Any]
-    """Helper to extract a given key's value (default 'id') from a list of objects if they exist."""
-    if not data_list or not isinstance(data_list, list):
-        print(data_list) # Your debug print
-        return set()
-    # Ensure the value from item.get(key_name) is not None before adding to set,
-    # as IGDB IDs are positive integers and should be truthy.
-    # If an ID could be 0, and 0 is a valid ID you want to include, this condition might need adjustment.
-    # However, IGDB IDs are typically positive.
-    extracted_values = set()
-    for item in data_list:
-        if item and isinstance(item, dict):
-            value = item.get(key_name)
-            if value is not None: # Explicitly check for None, as 0 could be a valid ID in other contexts
-                extracted_values.add(value)
-    return extracted_values
+    if union_len == 0: # This implies both sets were empty
+        return 0.0
+    
+    return intersection_len / union_len
 
 def recommend_games_from_mongo(
     liked_game_name: str,
-    collection: pymongo.collection.Collection,
+    current_db: pymongo.database.Database,
     top_n: int = 5,
     genre_weight: float = 0.4,
-    keyword_weight: float = 0.3, # Adjusted from your recommend.py to sum to 1 with themes
+    keyword_weight: float = 0.3,
     theme_weight: float = 0.3
 ) -> List[Dict[str, Any]]:
     
+    game_coll = current_db[MONGO_GAMES_COLLECTION_NAME]
+    cover_coll = current_db[MONGO_COVERS_COLLECTION_NAME]
+    genre_coll = current_db[MONGO_GENRES_COLLECTION_NAME]
+    theme_coll = current_db[MONGO_THEMES_COLLECTION_NAME]
+    
     # Find the seed game by name (case-insensitive regex search)
     # Using a regex for case-insensitivity. For exact match, just use liked_game_name.
-    seed_game = collection.find_one({"name": {"$regex": f"^{liked_game_name}$", "$options": "i"}})
+    seed_game = game_coll.find_one({"name": {"$regex": f"^{liked_game_name}$", "$options": "i"}})
 
     if not seed_game:
         raise HTTPException(status_code=404, detail=f"Game '{liked_game_name}' not found in the database.")
@@ -87,16 +99,25 @@ def recommend_games_from_mongo(
     seed_keywords = set(seed_game.get('keywords', []))
     seed_themes = set(seed_game.get('themes', []))
 
-    recommendations = []
+    recommendations_data = []
     
     # Query for other games. Project only necessary fields.
     # Exclude the seed game itself.
     query_filter = {"id": {"$ne": seed_game.get('id')}}
-    projection = {"name": 1, "id": 1, "genres": 1, "keywords": 1, "themes": 1, "_id": 0}
+    projection = {
+        "name": 1, "id": 1,
+        "genres": 1, "keywords": 1, "themes": 1, # Keep for similarity and display names
+        "cover": 1,                             # For cover image
+        "first_release_date": 1,                # For release year
+        "total_rating": 1,                      # For total rating
+        "_id": 0
+    }
+    
+    potential_recommendations = []
     
     # Iterate through all other games in the database
     # For very large datasets, consider more optimized querying or pre-computation
-    for game in collection.find(query_filter, projection):
+    for game in game_coll.find(query_filter, projection):
         current_genres = set(game.get('genres', []))
         current_keywords = set(game.get('keywords', []))
         current_themes = set(game.get('themes', []))
@@ -109,14 +130,62 @@ def recommend_games_from_mongo(
                            (theme_weight * theme_sim)
         
         if total_similarity > 0:
-            recommendations.append({
-                'name': game.get('name'),
-                'score': total_similarity, # Round score for cleaner output
-                'id': game.get('id')
+            potential_recommendations.append({
+                'game_data': game,
+                'score': total_similarity,
             })
 
-    recommendations.sort(key=lambda x: x['score'], reverse=True)
-    return recommendations[:top_n]
+    potential_recommendations.sort(key=lambda x: x['score'], reverse=True)
+    top_potentials = potential_recommendations[:top_n]
+
+    for rec_item in top_potentials:
+        game = rec_item['game_data'] # The game document from 'games' collection
+        
+        cover_url = None
+        cover_id = game.get('cover') # Assuming this is the ID for the 'covers' collection
+        if cover_id:
+            cover_doc = cover_coll.find_one({"id": cover_id})
+            if cover_doc:
+                # Extract the last part after the last '/' in cover_doc['url']
+                url = cover_doc.get('url')
+                if url:
+                    cover_url = "https://images.igdb.com/igdb/image/upload/t_cover_big/" + url.split('/')[-1]
+        
+        release_year = None
+        first_release_timestamp = game.get('first_release_date')
+        if first_release_timestamp:
+            try:
+                release_year = datetime.fromtimestamp(first_release_timestamp).year
+            except (TypeError, ValueError):
+                pass 
+        
+        genre_names = []
+        genre_ids = game.get('genres', []) # List of genre IDs
+        if genre_ids:
+            genre_docs = genre_coll.find({"id": {"$in": genre_ids}}, {"name": 1, "_id": 0})
+            genre_names = [g_doc.get('name') for g_doc in genre_docs if g_doc.get('name')]
+            
+        theme_names = []
+        theme_ids = game.get('themes', []) # List of theme IDs
+        if theme_ids:
+            theme_docs = theme_coll.find({"id": {"$in": theme_ids}}, {"name": 1, "_id": 0})
+            theme_names = [t_doc.get('name') for t_doc in theme_docs if t_doc.get('name')]
+        
+        total_rating_value = game.get('total_rating')
+        total_rating_display = round(total_rating_value) if total_rating_value is not None else None
+
+        recommendations_data.append({
+            'name': game.get('name'),
+            'score': round(rec_item['score'], 4),
+            'id': game.get('id'),
+            'cover_url': cover_url,
+            'release_year': release_year,
+            'genres': genre_names,
+            'themes': theme_names,
+            'total_rating': total_rating_display
+        })
+
+    return recommendations_data
 
 @app.get("/recommendations/{game_name}", response_model=List[Dict[str, Any]])
 async def get_recommendations_for_game(game_name: str, top_n: int = 5):
@@ -132,7 +201,7 @@ async def get_recommendations_for_game(game_name: str, top_n: int = 5):
     try:
         recommended_games = recommend_games_from_mongo(
             liked_game_name=game_name,
-            collection=games_collection,
+            current_db=db,
             top_n=top_n
         )
         if not recommended_games and games_collection.count_documents({"name": {"$regex": f"^{game_name}$", "$options": "i"}}) > 0 :
