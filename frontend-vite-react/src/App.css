@@ -12,8 +12,39 @@
 .search-form {
   display: flex;
   gap: 10px;
+  justify-content: center;
+  align-items: center; /* Align items vertically if checkbox makes form taller */
+}
+
+.options-bar {
+  margin-top: 10px;
   margin-bottom: 20px;
-  justify-content: center; /* This centers the input and button within the form */
+  text-align: center; /* Center the label and checkbox */
+}
+
+.options-bar label {
+  font-size: 0.9em;
+  color: #555;
+  cursor: pointer;
+}
+
+.options-bar input[type="checkbox"] {
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.recommendation-item.same-collection {
+  border-left: 5px solid #007bff; /* Example: highlight series games */
+}
+
+.series-badge {
+  font-size: 0.8em;
+  font-weight: normal;
+  color: #007bff;
+  margin-left: 5px;
+  background-color: #e7f3ff;
+  padding: 2px 5px;
+  border-radius: 3px;
 }
 
 .search-input {

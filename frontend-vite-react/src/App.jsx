@@ -7,6 +7,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searchedGame, setSearchedGame] = useState(''); // To display what was searched for
+  const [prioritizeSeries, setPrioritizeSeries] = useState(false);
 
   const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI backend URL
 
@@ -25,7 +26,7 @@ function App() {
     try {
       // Encode the game name to handle spaces and special characters in the URL
       const encodedGameName = encodeURIComponent(gameName);
-      const response = await fetch(`${API_BASE_URL}/recommendations/${encodedGameName}?top_n=5`);
+      const response = await fetch(`${API_BASE_URL}/recommendations/${encodedGameName}?top_n=5&prioritize_series=${prioritizeSeries}`);
       
       if (!response.ok) {
         const errorData = await response.json();
@@ -45,6 +46,10 @@ function App() {
 
   const handleSearchChange = (event) => {
     setSearchTerm(event.target.value);
+  };
+
+  const handlePrioritizeSeriesChange = (event) => {
+    setPrioritizeSeries(event.target.checked);
   };
 
   const handleKeyDown = (event) => {
@@ -74,6 +79,17 @@ function App() {
           {loading ? 'Searching...' : 'Search'}
         </button>
       </form>
+      <div className="options-bar"> {/* Wrapper for checkbox */}
+        <label htmlFor="prioritize-series-checkbox">
+          <input
+            type="checkbox"
+            id="prioritize-series-checkbox"
+            checked={prioritizeSeries}
+            onChange={handlePrioritizeSeriesChange}
+          />
+          Prioritize games from the same series
+        </label>
+      </div>
 
       {error && <p className="error-message">Error: {error}</p>}
 
@@ -91,7 +107,7 @@ function App() {
                 <img src={game.cover_url} alt={`${game.name} cover`} className="game-cover" />
               )}
               <div className="game-info">
-                <h3>{game.name}</h3>
+                <h3>{game.name} {game.from_same_collection && <span className="series-badge">(Series)</span>}</h3>
                 <p className="game-score">Similarity Score: {game.score !== undefined ? game.score.toFixed(4) : 'N/A'}</p>
                 {game.release_year && <p>Year: {game.release_year}</p>}
                 {game.genres && game.genres.length > 0 && (

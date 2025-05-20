@@ -80,7 +80,9 @@ def recommend_games_from_mongo(
     top_n: int = 5,
     genre_weight: float = 0.4,
     keyword_weight: float = 0.3,
-    theme_weight: float = 0.3
+    theme_weight: float = 0.3,
+    prioritize_series: bool = False,
+    series_bonus: float = 0.5
 ) -> List[Dict[str, Any]]:
     
     game_coll = current_db[MONGO_GAMES_COLLECTION_NAME]
@@ -98,6 +100,7 @@ def recommend_games_from_mongo(
     seed_genres = set(seed_game.get('genres', []))
     seed_keywords = set(seed_game.get('keywords', []))
     seed_themes = set(seed_game.get('themes', []))
+    seed_collection_ids = set(seed_game.get('collections', []))
 
     recommendations_data = []
     
@@ -110,17 +113,21 @@ def recommend_games_from_mongo(
         "cover": 1,                             # For cover image
         "first_release_date": 1,                # For release year
         "total_rating": 1,                      # For total rating
+        "collections": 1,
+        "version_parent": 1,
+        "parent_game": 1,
         "_id": 0
     }
     
     potential_recommendations = []
-    
+
     # Iterate through all other games in the database
     # For very large datasets, consider more optimized querying or pre-computation
     for game in game_coll.find(query_filter, projection):
         current_genres = set(game.get('genres', []))
         current_keywords = set(game.get('keywords', []))
         current_themes = set(game.get('themes', []))
+
         genre_sim = calculate_jaccard_similarity(seed_genres, current_genres)
         keyword_sim = calculate_jaccard_similarity(seed_keywords, current_keywords)
         theme_sim = calculate_jaccard_similarity(seed_themes, current_themes)
@@ -129,10 +136,24 @@ def recommend_games_from_mongo(
                            (keyword_weight * keyword_sim) + \
                            (theme_weight * theme_sim)
         
-        if total_similarity > 0:
+        from_same_collection = False
+        if prioritize_series:
+            candidate_collection_ids = set(game.get('collections', []))
+            if len(seed_collection_ids.intersection(candidate_collection_ids)) > 0:
+                if (game.get('version_parent') == seed_game.get('id')) or (seed_game.get('version_parent') == game.get('id')):
+                    # If the game is a version of the liked game, we don't want to recommend it
+                    continue
+                if game.get('id') in seed_game.get('remasters', []) or seed_game.get('id') in game.get('remasters', []):
+                    # If the game is a remaster of the liked game, we don't want to recommend it
+                    continue
+                total_similarity += series_bonus
+                from_same_collection = True
+                   
+        if total_similarity > 0 and game.get('version_parent') is None and (game.get('parent_game') is None or game.get('parent_game') == seed_game.get('id')):
             potential_recommendations.append({
                 'game_data': game,
                 'score': total_similarity,
+                'from_same_collection': from_same_collection
             })
 
     potential_recommendations.sort(key=lambda x: x['score'], reverse=True)
@@ -182,13 +203,14 @@ def recommend_games_from_mongo(
             'release_year': release_year,
             'genres': genre_names,
             'themes': theme_names,
-            'total_rating': total_rating_display
+            'total_rating': total_rating_display,
+            'from_same_collection': rec_item['from_same_collection'],
         })
 
     return recommendations_data
 
 @app.get("/recommendations/{game_name}", response_model=List[Dict[str, Any]])
-async def get_recommendations_for_game(game_name: str, top_n: int = 5):
+async def get_recommendations_for_game(game_name: str, top_n: int = 5, prioritize_series: bool = False):
     """
     Get game recommendations based on a liked game.
     
@@ -202,7 +224,8 @@ async def get_recommendations_for_game(game_name: str, top_n: int = 5):
         recommended_games = recommend_games_from_mongo(
             liked_game_name=game_name,
             current_db=db,
-            top_n=top_n
+            top_n=top_n,
+            prioritize_series=prioritize_series
         )
         if not recommended_games and games_collection.count_documents({"name": {"$regex": f"^{game_name}$", "$options": "i"}}) > 0 :
              # Seed game was found, but no recommendations generated
