@@ -9,11 +9,88 @@
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
 }
 
+.search-container {
+  position: relative; /* For positioning the suggestions list */
+  margin-bottom: 10px; /* Adjust as needed */
+  display: flex; /* To align form properly if needed, or remove if form is block */
+  justify-content: center; /* Center the form within this container */
+}
+
 .search-form {
   display: flex;
   gap: 10px;
+  /* Removed margin-bottom from here */
   justify-content: center;
-  align-items: center; /* Align items vertically if checkbox makes form taller */
+  align-items: center;
+  width: 100%; /* Make form take width of container */
+  max-width: 550px; /* Control max width of form itself */
+}
+
+.suggestions-list {
+  position: absolute;
+  top: 100%; /* Position below the search input */
+  left: 0;
+  right: 0;
+  background-color: white;
+  border: 1px solid #ccc;
+  border-top: none;
+  list-style-type: none;
+  padding: 0;
+  margin: 0 auto; /* Center the list if its width is constrained */
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 1000; /* Ensure it's above other content */
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  border-radius: 0 0 4px 4px;
+  /* To align with search input if search-form is centered and has max-width */
+  /* This assumes search-input is the dominant element for width */
+  /* You might need to adjust this based on your exact layout of search-form */
+  max-width: 400px; /* Should match search-input's max-width if suggestions align to it */
+  /* If search-form has a specific width, align suggestions to that */
+}
+
+.suggestions-list li { /* Becomes .suggestion-item */
+  padding: 5px 10px; /* Adjusted padding */
+  cursor: pointer;
+  text-align: left;
+  display: flex; /* Added for layout */
+  align-items: center; /* Vertically align items */
+  gap: 8px; /* Space between cover and text */
+}
+
+.suggestions-list li:hover {
+  background-color: #f0f0f0;
+}
+
+.suggestion-item { /* New class for li if you prefer more specificity */
+  /* (styles from .suggestions-list li are inherited or can be moved here) */
+}
+
+.suggestion-cover {
+  width: 30px; /* Small cover for suggestions */
+  height: 40px; /* Adjust aspect ratio as needed */
+  object-fit: cover;
+  border-radius: 2px;
+  flex-shrink: 0; /* Prevent image from shrinking */
+}
+
+.suggestion-info {
+  display: flex;
+  flex-direction: column; /* Stack name and year */
+  justify-content: center;
+  min-width: 0; /* Allow text to shrink and wrap if needed */
+}
+
+.suggestion-name {
+  font-size: 0.9em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis; /* Add ellipsis if name is too long */
+}
+
+.suggestion-year {
+  font-size: 0.8em;
+  color: #666;
 }
 
 .options-bar {

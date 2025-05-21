@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
 function App() {
@@ -8,8 +8,51 @@ function App() {
   const [error, setError] = useState(null);
   const [searchedGame, setSearchedGame] = useState(''); // To display what was searched for
   const [prioritizeSeries, setPrioritizeSeries] = useState(false);
+  const [suggestions, setSuggestions] = useState([]); // State for search suggestions
+  const [isSuggestionsVisible, setIsSuggestionsVisible] = useState(false); // Control visibility
 
   const API_BASE_URL = 'http://localhost:8000'; // Your FastAPI backend URL
+
+  // Debounce function
+  const debounce = (func, delay) => {
+    let timeoutId;
+    return (...args) => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        func.apply(this, args);
+      }, delay);
+    };
+  };
+
+  const fetchGameSuggestions = async (query) => {
+    if (!query.trim() || query.length < 2) { // Only search if query is not empty and has some length
+      setSuggestions([]);
+      setIsSuggestionsVisible(false);
+      return;
+    }
+    try {
+      const encodedQuery = encodeURIComponent(query);
+      const response = await fetch(`${API_BASE_URL}/search-games?query=${encodedQuery}&limit=5`);
+      if (!response.ok) {
+        // Don't necessarily throw a blocking error for suggestions
+        console.error("Failed to fetch suggestions:", response.status);
+        setSuggestions([]);
+        setIsSuggestionsVisible(false);
+        return;
+      }
+      const data = await response.json();
+      setSuggestions(data);
+      setIsSuggestionsVisible(data.length > 0);
+    } catch (err) {
+      console.error("Error fetching suggestions:", err);
+      setSuggestions([]);
+      setIsSuggestionsVisible(false);
+    }
+  };
+
+  // Create a debounced version of fetchGameSuggestions
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const debouncedFetchSuggestions = useCallback(debounce(fetchGameSuggestions, 500), []);
 
   const fetchRecommendations = async (gameName) => {
     if (!gameName.trim()) {
@@ -22,6 +65,8 @@ function App() {
     setLoading(true);
     setError(null);
     setSearchedGame(gameName); // Set the game name that was searched
+    setSuggestions([]); // Hide suggestions when a full search is made
+    setIsSuggestionsVisible(false);
 
     try {
       // Encode the game name to handle spaces and special characters in the URL
@@ -45,7 +90,16 @@ function App() {
   };
 
   const handleSearchChange = (event) => {
-    setSearchTerm(event.target.value);
+    const newSearchTerm = event.target.value;
+    setSearchTerm(newSearchTerm);
+    debouncedFetchSuggestions(newSearchTerm);
+  };
+
+  const handleSuggestionClick = (gameName) => {
+    setSearchTerm(gameName);
+    setSuggestions([]);
+    setIsSuggestionsVisible(false);
+    fetchRecommendations(gameName); // Optionally trigger search directly
   };
 
   const handlePrioritizeSeriesChange = (event) => {
@@ -54,31 +108,65 @@ function App() {
 
   const handleKeyDown = (event) => {
     if (event.key === 'Enter') {
+      setIsSuggestionsVisible(false); // Hide suggestions on Enter
       fetchRecommendations(searchTerm);
     }
   };
 
   const handleSubmit = (event) => {
-    event.preventDefault(); // Prevent form submission from reloading the page
+    event.preventDefault();
+    setIsSuggestionsVisible(false); // Hide suggestions on submit
     fetchRecommendations(searchTerm);
   }
+
+  // Hide suggestions if clicked outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (event.target.closest('.search-container')) return; // Ignore clicks inside search container
+      setIsSuggestionsVisible(false);
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   return (
     <div className="App">
       <h1>Game Recommendation Finder</h1>
-      <form onSubmit={handleSubmit} className="search-form">
-        <input
-          type="text"
-          placeholder="Enter a game name..."
-          value={searchTerm}
-          onChange={handleSearchChange}
-          onKeyDown={handleKeyDown} // Optional: if you want Enter in input to also submit
-          className="search-input"
-        />
-        <button type="submit" disabled={loading} className="search-button">
-          {loading ? 'Searching...' : 'Search'}
-        </button>
-      </form>
+      <div className="search-container"> 
+        <form onSubmit={handleSubmit} className="search-form">
+          <input
+            type="text"
+            placeholder="Enter a game name..."
+            value={searchTerm}
+            onChange={handleSearchChange}
+            onKeyDown={handleKeyDown}
+            className="search-input"
+            onFocus={() => setIsSuggestionsVisible(suggestions.length > 0 && searchTerm.length > 0)} // Show on focus if suggestions exist
+          />
+          <button type="submit" disabled={loading} className="search-button">
+            {loading ? 'Searching...' : 'Search'}
+          </button>
+        </form>
+        {isSuggestionsVisible && suggestions.length > 0 && (
+          <ul className="suggestions-list">
+            {suggestions.map((game) => (
+              <li key={game.id} onClick={() => handleSuggestionClick(game.name)} className="suggestion-item">
+                {game.cover_url && (
+                  <img src={game.cover_url} alt={`${game.name} cover`} className="suggestion-cover" />
+                )}
+                <div className="suggestion-info">
+                  <span className="suggestion-name">{game.name}</span>
+                  {game.release_year && (
+                    <span className="suggestion-year">({game.release_year})</span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <div className="options-bar"> {/* Wrapper for checkbox */}
         <label htmlFor="prioritize-series-checkbox">
           <input

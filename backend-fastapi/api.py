@@ -3,9 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 import pymongo
 from typing import List, Dict, Any, Set
 from datetime import datetime
+import meilisearch
+import os
+
+# --- Meilisearch Connection Details ---
+MEILI_HOST_URL = os.environ.get("MEILI_HOST_URL", "http://localhost:7700")
+MEILI_MASTER_KEY = os.environ.get("MEILI_MASTER_KEY") # Set your master key if you have one (recommended for production)
+MEILI_INDEX_NAME = "games"
+# --- ---
+
 
 # --- MongoDB Connection Details (should match your main.py) ---
-MONGO_CONNECTION_STRING = "mongodb://localhost:27017/"
+MONGO_CONNECTION_STRING = os.environ.get("MONGO_CONNECTION_STRING","mongodb://localhost:27017/") 
 MONGO_DB_NAME = "igdb_data"
 MONGO_GAMES_COLLECTION_NAME = "games"  # Collection where game data is stored
 MONGO_COVERS_COLLECTION_NAME = "covers"
@@ -44,9 +53,12 @@ covers_collection = None
 genres_collection = None
 themes_collection = None
 
+meili_client = None # Meilisearch client
+
 @app.on_event("startup")
 async def startup_db_client():
     global mongo_client, db, games_collection, covers_collection, genres_collection, themes_collection
+    global meili_client
     mongo_client = pymongo.MongoClient(MONGO_CONNECTION_STRING)
     db = mongo_client[MONGO_DB_NAME]
     games_collection = db[MONGO_GAMES_COLLECTION_NAME]
@@ -57,6 +69,17 @@ async def startup_db_client():
     # main.py creates an index on 'id'. For name lookups, a text index or regex on a regular index is used.
     # games_collection.create_index([("name", pymongo.TEXT)], background=True) # Optional: for text search
     print(f"Connected to MongoDB database: '{MONGO_DB_NAME}', collection: '{MONGO_GAMES_COLLECTION_NAME}'")
+
+    # Initialize Meilisearch client
+    try:
+        meili_client = meilisearch.Client(MEILI_HOST_URL, MEILI_MASTER_KEY)
+        # You might want to check if the index exists or create it if it doesn't
+        # For now, we assume it's created and populated.
+        # Example: meili_client.create_index(MEILI_INDEX_NAME, {'primaryKey': 'id'})
+        print(f"Connected to Meilisearch at {MEILI_HOST_URL}, index: '{MEILI_INDEX_NAME}'")
+    except Exception as e:
+        print(f"Error connecting to Meilisearch: {e}")
+        meili_client = None # Ensure client is None if connection fails
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -116,6 +139,7 @@ def recommend_games_from_mongo(
         "collections": 1,
         "version_parent": 1,
         "parent_game": 1,
+        "game_type": 1,
         "_id": 0
     }
     
@@ -149,7 +173,7 @@ def recommend_games_from_mongo(
                 total_similarity += series_bonus
                 from_same_collection = True
                    
-        if total_similarity > 0 and game.get('version_parent') is None and (game.get('parent_game') is None or game.get('parent_game') == seed_game.get('id')):
+        if total_similarity > 0 and game.get('version_parent') is None and (game.get('parent_game') is None or game.get('parent_game') == seed_game.get('id')) and game.get('game_type') != 14:
             potential_recommendations.append({
                 'game_data': game,
                 'score': total_similarity,
@@ -209,6 +233,65 @@ def recommend_games_from_mongo(
 
     return recommendations_data
 
+@app.get("/search-games", response_model=List[Dict[str, Any]])
+async def search_games_for_suggestions(query: str, limit: int = 5):
+    """
+    Provides game name suggestions based on a search query,
+    filtering out DLCs, expansions, and specific game types.
+    """
+    if meili_client is None:
+        raise HTTPException(status_code=503, detail="Search service not available.")
+
+    try:
+        index = meili_client.index(MEILI_INDEX_NAME)
+        
+        # Meilisearch filter syntax:
+        # - To check for non-existence or null: "parent_game NOT EXISTS" or "parent_game IS NULL"
+        #   (Meilisearch's behavior with non-existent vs null can vary, test this)
+        #   A common way is to ensure the field is not present or explicitly null if your data has it.
+        #   If `parent_game` is only present for DLCs, "parent_game NOT EXISTS" is good.
+        #   If `parent_game` can be `null` for base games, then `(parent_game NOT EXISTS OR parent_game IS NULL)`
+        # - For game_type, assuming 14 is DLC/Add-on
+        # - For version_parent, assuming base games have this as null or non-existent
+        
+        # Let's assume for Meilisearch:
+        # - Base games do NOT have a 'parent_game' attribute or it's null.
+        # - Base games do NOT have a 'version_parent' attribute or it's null.
+        # - We want to exclude game_type 14 (DLC/Add-on).
+        # Meilisearch filter syntax is an array of strings or arrays of strings (for OR conditions)
+        
+        search_params = {
+            'q': query,
+            'limit': limit,
+            'attributesToRetrieve': ['id', 'name', 'cover_url', 'release_year'], # Only fetch id and name
+            'filter': [
+                '(parent_game NOT EXISTS OR parent_game IS NULL)',
+                '(version_parent NOT EXISTS OR version_parent IS NULL)',
+                'game_type != 14' # Exclude game_type 14 (DLC/Add-on)
+            ]
+            # You might need to adjust the filter based on how your data is structured in Meilisearch
+            # and Meilisearch's exact filtering capabilities for null/non-existent fields.
+            # If `parent_game` is always present and `0` or `null` for base games, filter would be `parent_game = null` or `parent_game = 0`.
+        }
+        
+        search_results = index.search(query, search_params)
+        
+        # Format results to a simple list of {'id': game_id, 'name': game_name}
+        suggestions = []
+        for hit in search_results.get('hits', []):
+            suggestions.append({
+                'id': hit.get('id'), 
+                'name': hit.get('name'),
+                'cover_url': hit.get('cover_url'), # Include cover_url
+                'release_year': hit.get('release_year') # Include release_year
+            })
+            
+        return suggestions
+        
+    except Exception as e:
+        print(f"Error searching with Meilisearch: {e}")
+        raise HTTPException(status_code=500, detail="Error performing search.")
+    
 @app.get("/recommendations/{game_name}", response_model=List[Dict[str, Any]])
 async def get_recommendations_for_game(game_name: str, top_n: int = 5, prioritize_series: bool = False):
     """
