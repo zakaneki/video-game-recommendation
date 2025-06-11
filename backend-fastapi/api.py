@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Set
 from datetime import datetime
 import meilisearch
 import os
+from contextlib import asynccontextmanager
 
 # --- Meilisearch Connection Details ---
 MEILI_HOST_URL = os.environ.get("MEILI_HOST_URL", "http://localhost:7700")
@@ -25,7 +26,8 @@ MONGO_THEMES_COLLECTION_NAME = "themes"
 app = FastAPI(
     title="Video Game Recommendation API",
     description="Provides game recommendations based on Jaccard similarity of genres, keywords, and themes.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # --- CORS Middleware ---
@@ -43,47 +45,39 @@ app.add_middleware(
 )
 
 
-# --- MongoDB Client ---
-# It's generally recommended to manage client lifecycle with startup/shutdown events for production
-# For simplicity here, we'll create it on demand or keep it global.
-# For a more robust solution, consider FastAPI's dependency injection for DB connections.
-mongo_client = None
-games_collection = None
-covers_collection = None
-genres_collection = None
-themes_collection = None
+# --- Global variables for clients and collections ---
+mongo_client: pymongo.MongoClient = None
+db: pymongo.database.Database = None
+games_collection: pymongo.collection.Collection = None
+covers_collection: pymongo.collection.Collection = None
+genres_collection: pymongo.collection.Collection = None
+themes_collection: pymongo.collection.Collection = None
+meili_client: meilisearch.Client = None
 
-meili_client = None # Meilisearch client
-
-@app.on_event("startup")
-async def startup_db_client():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
     global mongo_client, db, games_collection, covers_collection, genres_collection, themes_collection
     global meili_client
+    
     mongo_client = pymongo.MongoClient(MONGO_CONNECTION_STRING)
     db = mongo_client[MONGO_DB_NAME]
     games_collection = db[MONGO_GAMES_COLLECTION_NAME]
     covers_collection = db[MONGO_COVERS_COLLECTION_NAME]
     genres_collection = db[MONGO_GENRES_COLLECTION_NAME]
     themes_collection = db[MONGO_THEMES_COLLECTION_NAME]
-    # Ensure index for faster lookups on name (if not already created by main.py on 'id')
-    # main.py creates an index on 'id'. For name lookups, a text index or regex on a regular index is used.
-    # games_collection.create_index([("name", pymongo.TEXT)], background=True) # Optional: for text search
     print(f"Connected to MongoDB database: '{MONGO_DB_NAME}', collection: '{MONGO_GAMES_COLLECTION_NAME}'")
 
-    # Initialize Meilisearch client
     try:
         meili_client = meilisearch.Client(MEILI_HOST_URL, MEILI_MASTER_KEY)
-        # You might want to check if the index exists or create it if it doesn't
-        # For now, we assume it's created and populated.
-        # Example: meili_client.create_index(MEILI_INDEX_NAME, {'primaryKey': 'id'})
         print(f"Connected to Meilisearch at {MEILI_HOST_URL}, index: '{MEILI_INDEX_NAME}'")
     except Exception as e:
         print(f"Error connecting to Meilisearch: {e}")
-        meili_client = None # Ensure client is None if connection fails
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    global mongo_client
+        meili_client = None
+    
+    yield
+    
+    # Shutdown logic
     if mongo_client:
         mongo_client.close()
         print("MongoDB connection closed.")
