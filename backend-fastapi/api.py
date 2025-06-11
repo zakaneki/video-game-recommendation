@@ -6,7 +6,8 @@ from datetime import datetime
 import meilisearch
 import os
 from contextlib import asynccontextmanager
-
+from dotenv import load_dotenv
+load_dotenv()
 # --- Meilisearch Connection Details ---
 MEILI_HOST_URL = os.environ.get("MEILI_HOST_URL", "http://localhost:7700")
 MEILI_MASTER_KEY = os.environ.get("MEILI_MASTER_KEY") # Set your master key if you have one (recommended for production)
@@ -22,6 +23,36 @@ MONGO_COVERS_COLLECTION_NAME = "covers"
 MONGO_GENRES_COLLECTION_NAME = "genres"
 MONGO_THEMES_COLLECTION_NAME = "themes"
 # --- ---
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    global mongo_client, db, games_collection, covers_collection, genres_collection, themes_collection
+    global meili_client
+    
+    mongo_client = pymongo.MongoClient(MONGO_CONNECTION_STRING)
+    db = mongo_client[MONGO_DB_NAME]
+    games_collection = db[MONGO_GAMES_COLLECTION_NAME]
+    covers_collection = db[MONGO_COVERS_COLLECTION_NAME]
+    genres_collection = db[MONGO_GENRES_COLLECTION_NAME]
+    themes_collection = db[MONGO_THEMES_COLLECTION_NAME]
+    print(f"Connected to MongoDB database: '{MONGO_DB_NAME}', collection: '{MONGO_GAMES_COLLECTION_NAME}'")
+
+    try:
+        meili_client = meilisearch.Client(MEILI_HOST_URL, MEILI_MASTER_KEY)
+        index = meili_client.index("games")
+        index.update_filterable_attributes(["parent_game", "version_parent", "game_type"])
+        print(f"Connected to Meilisearch at {MEILI_HOST_URL}, index: '{MEILI_INDEX_NAME}'")
+    except Exception as e:
+        print(f"Error connecting to Meilisearch: {e}")
+        meili_client = None
+    
+    yield
+    
+    # Shutdown logic
+    if mongo_client:
+        mongo_client.close()
+        print("MongoDB connection closed.")
 
 app = FastAPI(
     title="Video Game Recommendation API",
@@ -53,34 +84,6 @@ covers_collection: pymongo.collection.Collection = None
 genres_collection: pymongo.collection.Collection = None
 themes_collection: pymongo.collection.Collection = None
 meili_client: meilisearch.Client = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup logic
-    global mongo_client, db, games_collection, covers_collection, genres_collection, themes_collection
-    global meili_client
-    
-    mongo_client = pymongo.MongoClient(MONGO_CONNECTION_STRING)
-    db = mongo_client[MONGO_DB_NAME]
-    games_collection = db[MONGO_GAMES_COLLECTION_NAME]
-    covers_collection = db[MONGO_COVERS_COLLECTION_NAME]
-    genres_collection = db[MONGO_GENRES_COLLECTION_NAME]
-    themes_collection = db[MONGO_THEMES_COLLECTION_NAME]
-    print(f"Connected to MongoDB database: '{MONGO_DB_NAME}', collection: '{MONGO_GAMES_COLLECTION_NAME}'")
-
-    try:
-        meili_client = meilisearch.Client(MEILI_HOST_URL, MEILI_MASTER_KEY)
-        print(f"Connected to Meilisearch at {MEILI_HOST_URL}, index: '{MEILI_INDEX_NAME}'")
-    except Exception as e:
-        print(f"Error connecting to Meilisearch: {e}")
-        meili_client = None
-    
-    yield
-    
-    # Shutdown logic
-    if mongo_client:
-        mongo_client.close()
-        print("MongoDB connection closed.")
 
 def calculate_jaccard_similarity(set1: Set[Any], set2: Set[Any]) -> float:
     intersection_len = len(set1.intersection(set2))
